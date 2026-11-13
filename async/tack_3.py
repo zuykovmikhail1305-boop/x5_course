@@ -5,6 +5,12 @@ import httpx
 
 
 URLS = [f"https://picsum.photos/seed/{i}/800/600" for i in range(20)]
+URLS.extend(
+
+    ["https://no-such-site.invalid",
+    "https://httpbin.org/delay/10" ]
+
+)
 
 
 def timed(label, fn, *args):
@@ -14,24 +20,19 @@ def timed(label, fn, *args):
    print(f"{label}: {time.perf_counter() - start:.2f}s")
 
 
-backoff = 1
+sem = asyncio.Semaphore(5)
 
-
-async def robust_fetch(client: httpx.AsyncClient, url: str) -> int:
-
-    for attemp in range(3):
-
-        try:
-        
-            resp = await client.get(url, timeout=5)
-            return resp.status_code
-
-        except (httpx.TimeoutException, httpx.HTTPError) as e:
-            if attemp == 2:
-                raise
-
-            backoff = backoff * 2
-            await asyncio.sleep(backoff)
+async def robust_fetch(client: httpx.AsyncClient, url: str) -> bytes:
+    async with sem:
+        for attempt in range(3):
+            try:
+                resp = await client.get(url, timeout=httpx.Timeout(20, connect=5))
+                resp.raise_for_status()
+                return resp.content
+            except httpx.HTTPError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2 ** attempt)
 
 
 
@@ -41,6 +42,18 @@ async def robust_main():
             *(robust_fetch(client, url) for url in URLS),
             return_exceptions=True,
         )
+
+        ok, errors = {}, []
+        for url, res in zip(URLS, results):
+            if isinstance(res, Exception):
+                errors.append((url, repr(res)))
+            else:
+                ok[url] = res
+
+        print(f"Успешно: {len(ok)}, ошибок: {len(errors)}")
+        for url, err in errors:
+            print(f"  {url} -> {err}")
+        return ok, errors
 
         
 
